@@ -2,12 +2,14 @@ import socket
 from Communication.exceptions import *
 
 class Tcp:
-    def __init__(self, addr = None, port = 1234, encodings = 'utf8'):
+    def __init__(self, addr = None, port = 1234, timeout = None, encoding = 'utf8', decoding = None):
         self.__socket = None
         self.__addr = addr
         self.__port = Tcp.check_port(port)
-        self.__encodings = encodings
-        self.__recbuff = ''
+        self.__timeout = timeout
+        self.__encoding = encoding
+        self.__decoding = decoding
+        self.__recbuff = b''
         self.__bufsize = 4096
         if self.__addr != None:
             self.connect()
@@ -23,13 +25,13 @@ class Tcp:
             raise ValueError('Address not specified.')
         if port != None:
             self.__port = Tcp.check_port(port)
-        self.__socket = socket.create_connection((self.__addr, self.__port))
+        self.__socket = socket.create_connection((self.__addr, self.__port), self.__timeout)
 
     def disconnect(self):
         if self.connected:
             self.__socket.close()
             self.__socket = None
-            self.__recbuff = ''
+            self.__recbuff = b''
 
     def read(self, size):
         if self.__socket == None: raise PortClosedError('Operation on closed port (read).')
@@ -41,6 +43,10 @@ class Tcp:
         ret = self.__recbuff[0:size]
         if len(self.__recbuff) > size:
             self.__recbuff = self.__recbuff[size:]
+        else:
+            self.__recbuff = b''
+        if self.__decoding != None:
+            ret = str(ret, self.__decoding)
         return ret
 
     def write(self, value):
@@ -58,6 +64,15 @@ class Tcp:
     @property
     def connected(self):
         return self.__socket != None
+
+    @property
+    def timeout(self):
+        return self.__timeout
+    @timeout.setter
+    def timeout(self, value):
+        if self.__socket != None:
+            self.__socket.settimeout(value)
+        self.__timeout = value
 
     def __enter__(self):
         return self
