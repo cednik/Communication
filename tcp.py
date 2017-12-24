@@ -43,7 +43,10 @@ class Tcp:
     def read(self, size):
         if self.__socket == None: raise PortClosedError('Operation on closed port (read).')
         while len(self.__recbuff) < size:
-            v = self.__socket.recv(self.__bufsize)
+            try:
+                v = self.__socket.recv(self.__bufsize)
+            except socket.timeout:
+                break
             if not v:
                 raise ConnectionBrokenError()
             self.__recbuff += self.__decoder.decode(v)
