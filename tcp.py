@@ -1,5 +1,12 @@
 import socket
 from Communication.exceptions import *
+from codecs import getincrementalencoder, getincrementaldecoder, IncrementalEncoder, IncrementalDecoder
+
+class transparent_coder(IncrementalEncoder, IncrementalDecoder):
+    def encode(self, object, final):
+        return object
+    def decode(self, object, final):
+        return object
 
 class Tcp:
     def __init__(self, addr = None, port = 1234, timeout = None, encoding = 'utf8', decoding = None):
@@ -7,9 +14,9 @@ class Tcp:
         self.__addr = addr
         self.__port = Tcp.check_port(port)
         self.__timeout = timeout
-        self.__encoding = encoding
-        self.__decoding = decoding
-        self.__recbuff = b''
+        self.encoder = encoding
+        self.decoder = decoding
+        self.__init_recbuff()
         self.__bufsize = 4096
         if self.__addr != None:
             self.connect()
@@ -31,7 +38,7 @@ class Tcp:
         if self.connected:
             self.__socket.close()
             self.__socket = None
-            self.__recbuff = b''
+            self.__init_recbuff()
 
     def read(self, size):
         if self.__socket == None: raise PortClosedError('Operation on closed port (read).')
@@ -39,19 +46,20 @@ class Tcp:
             v = self.__socket.recv(self.__bufsize)
             if not v:
                 raise ConnectionBrokenError()
-            self.__recbuff += v
+            self.__recbuff += self.__decoder.decode(v)
         ret = self.__recbuff[0:size]
         if len(self.__recbuff) > size:
             self.__recbuff = self.__recbuff[size:]
         else:
-            self.__recbuff = b''
-        if self.__decoding != None:
-            ret = str(ret, self.__decoding)
+            self.__init_recbuff()
         return ret
 
     def write(self, value):
         if self.__socket == None: raise PortClosedError('Operation on closed port (write).')
-        value = bytes(value, self.__encodings)
+        if self.__force_encode or isinstance(value, str):
+            value = self.__encoder.encode(value)
+        else:
+            value = bytes(value)
         sent = 0
         all = len(value)
         while sent != all:
@@ -74,6 +82,21 @@ class Tcp:
             self.__socket.settimeout(value)
         self.__timeout = value
 
+    @property
+    def encoder(self):
+        return self.__encoder
+    @encoder.setter
+    def encoder(self, value):
+        self.__encoder = Tcp.resolve_coder(value, getincrementalencoder)
+        self.__force_encode = self.__encoder == value
+
+    @property
+    def decoder(self):
+        return self.__decoder
+    @decoder.setter
+    def decoder(self, value):
+        self.__decoder = Tcp.resolve_coder(value, getincrementaldecoder)
+
     def __enter__(self):
         return self
 
@@ -93,6 +116,9 @@ class Tcp:
     open = connect
     close = disconnect
 
+    def __init_recbuff(self):
+        self.__recbuff = b'' if self.__decoder == None else ''
+
     @staticmethod
     def check_port(port):
         if not isinstance(port, int):
@@ -100,3 +126,9 @@ class Tcp:
         if port < 0 or port > 65535:
             raise ValueError('Port has to be in range 0 to 65536, {} given.'.format(port))
         return port
+
+    @staticmethod
+    def resolve_coder(codings, getter):
+        if codings == None: return transparent_coder()
+        if isinstance(codings, str): return getter(codings)()
+        return codings

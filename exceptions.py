@@ -5,7 +5,3 @@ class ConnectionBrokenError(RuntimeError):
 class PortClosedError(RuntimeError):
     def __init__(msg = 'Operation on closed port.'):
         RuntimeError.__init__(msg)
-
-
-
-
