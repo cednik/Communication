@@ -40,7 +40,7 @@ class Tcp:
             self.__socket = None
             self.__init_recbuff()
 
-    def read(self, size):
+    def read(self, size = 1):
         if self.__socket == None: raise PortClosedError('Operation on closed port (read).')
         while len(self.__recbuff) < size:
             try:
@@ -100,6 +100,10 @@ class Tcp:
     def decoder(self, value):
         self.__decoder = Tcp.resolve_coder(value, getincrementaldecoder)
 
+    @property
+    def read_type(self):
+        return b'' if self.__decoder == None else ''
+
     def __enter__(self):
         return self
 
@@ -114,13 +118,13 @@ class Tcp:
             state = 'disconnected'
             if self.__addr != None:
                 state += '[{}, {}]'.format(self.__addr, self.__port)
-        return '<Tcp({}) at {:X}>'.format(state, id(self))
+        return '<Tcp({}) at 0x{:08X}>'.format(state, id(self))
 
     open = connect
     close = disconnect
 
     def __init_recbuff(self):
-        self.__recbuff = b'' if self.__decoder == None else ''
+        self.__recbuff = self.read_type
 
     @staticmethod
     def check_port(port):
