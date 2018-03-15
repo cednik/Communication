@@ -9,7 +9,7 @@ class transparent_coder(IncrementalEncoder, IncrementalDecoder):
         return object
 
 class Client:
-    def __init__(self, addr = None, port = 1234, timeout = None, encoding = 'utf8', decoding = None):
+    def __init__(self, addr = None, port = 1234, timeout = None, encoding = 'utf8', decoding = None, noexcept = True, read_error_retval = None):
         self.__socket = None
         self.__addr = addr
         self.__port = Client.check_port(port)
@@ -18,6 +18,8 @@ class Client:
         self.decoder = decoding
         self.__init_recbuff()
         self.__bufsize = 4096
+        self.__noexcept = noexcept
+        self.__read_error_retval = read_error_retval
         if self.__addr != None:
             self.connect()
 
@@ -32,9 +34,15 @@ class Client:
             raise ValueError('Address not specified.')
         if port != None:
             self.__port = Client.check_port(port)
-        self.__socket = socket.create_connection((self.__addr, self.__port), self.__timeout)
+        try:
+            self.__socket = socket.create_connection((self.__addr, self.__port), self.__timeout)
+        except:
+            if self.__noexcept:
+                return False
+            raise
         self.__readable = True
         self.__writable = True
+        return True
 
     def disconnect(self):
         if self.connected:
@@ -44,7 +52,7 @@ class Client:
             self.__init_recbuff()
 
     def shutdown(self, write = True, read = False):
-        if self.__socket == None: raise PortClosedError('Operation on closed port (read).')
+        if self.__socket == None: raise PortClosedError('Operation on closed port (shutdown).')
         if write:
             how = socket.SHUT_RDWR if read else socket.SHUT_WR
         elif read:
@@ -57,8 +65,14 @@ class Client:
             
 
     def read(self, size = 1):
-        if self.__socket == None: raise PortClosedError('Operation on closed port (read).')
-        if not self.__readable: raise ConnectionBrokenError()
+        if self.__socket == None:
+            if self.__noexcept:
+                return self.__read_error_retval
+            raise PortClosedError('Operation on closed port (read).')
+        if not self.__readable:
+            if self.__noexcept:
+                return self.__read_error_retval
+            raise ConnectionBrokenError()
         while len(self.__recbuff) < size:
             try:
                 v = self.__socket.recv(self.__bufsize)
@@ -66,9 +80,13 @@ class Client:
                 break
             except ConnectionResetError:
                 self.__readable = False
+                if self.__noexcept:
+                    return self.__read_error_retval
                 raise
             if not v:
                 self.__readable = False
+                if self.__noexcept:
+                    return self.__read_error_retval
                 raise ConnectionBrokenError()
             self.__recbuff += self.__decoder.decode(v)
         ret = self.__recbuff[0:size]
@@ -88,9 +106,16 @@ class Client:
         sent = 0
         all = len(value)
         while sent != all:
-            v = self.__socket.send(value[sent:])
+            try:
+                v = self.__socket.send(value[sent:])
+            except:
+                if self.__noexcept:
+                    return sent
+                raise
             if v == 0:
                 self.__writable = False
+                if self.__noexcept:
+                    return sent
                 raise ConnectionBrokenError()
             sent += v
         return sent
@@ -147,6 +172,13 @@ class Client:
     def read_type(self):
         return b'' if isinstance(self.__decoder, transparent_coder) else ''
 
+    @property
+    def noexcept(self):
+        return self.__noexcept
+    @noexcept.setter
+    def noexcept(self, value):
+        self.__noexcept = bool(value)
+
     def __enter__(self):
         return self
 
@@ -193,7 +225,19 @@ class Client:
 
 
 class Server:
-    def __init__(self, addr = '', port = 1234, timeout = None, family = socket.AF_INET, type = socket.SOCK_STREAM, proto = 0, max_con = 1, client_timeout = None, encoding = 'utf8', decoding = None):
+    def __init__(self,
+                 addr = '',
+                 port = 1234,
+                 timeout = None,
+                 family = socket.AF_INET,
+                 type = socket.SOCK_STREAM,
+                 proto = 0,
+                 max_con = 1,
+                 client_timeout = None,
+                 encoding = 'utf8',
+                 decoding = None,
+                 noexcept = True,
+                 read_error_retval = None):
         self.__port = Client.check_port(port)
         self.__client_timeout = client_timeout
         self.__encoding = encoding
@@ -202,6 +246,8 @@ class Server:
         self.__socket.bind((addr, self.__port))
         self.__socket.listen(max_con)
         self.__socket.settimeout(timeout)
+        self.__noexcept = noexcept
+        self.__read_error_retval = read_error_retval
 
     def accept(self):
         try:
@@ -211,7 +257,12 @@ class Server:
         except:
             raise
         else:
-            return Client(port = self.__port, encoding = self.__encoding, decoding = self.__decoding)._from_server(sock, addr, self.__client_timeout)
+            return Client(
+                port = self.__port,
+                encoding = self.__encoding,
+                decoding = self.__decoding,
+                noexcept = self.__noexcept,
+                read_error_retval = self.__read_error_retval)._from_server(sock, addr, self.__client_timeout)
 
     def close(self):
         self.__socket.close()
