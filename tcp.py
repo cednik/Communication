@@ -3,16 +3,16 @@ from Communication.exceptions import *
 from codecs import getincrementalencoder, getincrementaldecoder, IncrementalEncoder, IncrementalDecoder
 
 class transparent_coder(IncrementalEncoder, IncrementalDecoder):
-    def encode(self, object, final):
+    def encode(self, object, final = False):
         return object
-    def decode(self, object, final):
+    def decode(self, object, final = False):
         return object
 
-class Tcp:
+class Client:
     def __init__(self, addr = None, port = 1234, timeout = None, encoding = 'utf8', decoding = None):
         self.__socket = None
         self.__addr = addr
-        self.__port = Tcp.check_port(port)
+        self.__port = Client.check_port(port)
         self.__timeout = timeout
         self.encoder = encoding
         self.decoder = decoding
@@ -31,23 +31,44 @@ class Tcp:
         elif self.__addr == None:
             raise ValueError('Address not specified.')
         if port != None:
-            self.__port = Tcp.check_port(port)
+            self.__port = Client.check_port(port)
         self.__socket = socket.create_connection((self.__addr, self.__port), self.__timeout)
+        self.__readable = True
+        self.__writable = True
 
     def disconnect(self):
         if self.connected:
+            self.shutdown(True, True)
             self.__socket.close()
             self.__socket = None
             self.__init_recbuff()
 
+    def shutdown(self, write = True, read = False):
+        if self.__socket == None: raise PortClosedError('Operation on closed port (read).')
+        if write:
+            how = socket.SHUT_RDWR if read else socket.SHUT_WR
+        elif read:
+            how = socket.SHUT_RD
+        else:
+            return
+        self.__readable &= ~read
+        self.__writable &= ~write
+        self.__socket.shutdown(how)
+            
+
     def read(self, size = 1):
         if self.__socket == None: raise PortClosedError('Operation on closed port (read).')
+        if not self.__readable: raise ConnectionBrokenError()
         while len(self.__recbuff) < size:
             try:
                 v = self.__socket.recv(self.__bufsize)
-            except socket.timeout:
+            except (socket.timeout, BlockingIOError):
                 break
+            except ConnectionResetError:
+                self.__readable = False
+                raise
             if not v:
+                self.__readable = False
                 raise ConnectionBrokenError()
             self.__recbuff += self.__decoder.decode(v)
         ret = self.__recbuff[0:size]
@@ -59,6 +80,7 @@ class Tcp:
 
     def write(self, value):
         if self.__socket == None: raise PortClosedError('Operation on closed port (write).')
+        if not self.__writable: raise ConnectionBrokenError()
         if self.__force_encode or isinstance(value, str):
             value = self.__encoder.encode(value)
         else:
@@ -68,9 +90,30 @@ class Tcp:
         while sent != all:
             v = self.__socket.send(value[sent:])
             if v == 0:
+                self.__writable = False
                 raise ConnectionBrokenError()
             sent += v
         return sent
+
+    @property
+    def connected(self):
+        return self.__socket != None
+
+    @property
+    def readable(self):
+        return self.__readable
+
+    @property
+    def writable(self):
+        return self.__writable
+
+    @property
+    def address(self):
+        return self.__addr
+
+    @property
+    def port(self):
+        return self.__port
 
     @property
     def connected(self):
@@ -90,7 +133,7 @@ class Tcp:
         return self.__encoder
     @encoder.setter
     def encoder(self, value):
-        self.__encoder = Tcp.resolve_coder(value, getincrementalencoder)
+        self.__encoder = Client.resolve_coder(value, getincrementalencoder)
         self.__force_encode = self.__encoder == value
 
     @property
@@ -98,11 +141,11 @@ class Tcp:
         return self.__decoder
     @decoder.setter
     def decoder(self, value):
-        self.__decoder = Tcp.resolve_coder(value, getincrementaldecoder)
+        self.__decoder = Client.resolve_coder(value, getincrementaldecoder)
 
     @property
     def read_type(self):
-        return b'' if self.__decoder == None else ''
+        return b'' if isinstance(self.__decoder, transparent_coder) else ''
 
     def __enter__(self):
         return self
@@ -118,10 +161,18 @@ class Tcp:
             state = 'disconnected'
             if self.__addr != None:
                 state += '[{}, {}]'.format(self.__addr, self.__port)
-        return '<Tcp({}) at 0x{:08X}>'.format(state, id(self))
+        return '<tcp.Client({}) at 0x{:08X}>'.format(state, id(self))
 
     open = connect
     close = disconnect
+
+    def _from_server(self, socket, addr, timeout):
+        self.__socket = socket
+        self.__addr = addr
+        self.__readable = True
+        self.__writable = True
+        self.timeout = timeout
+        return self
 
     def __init_recbuff(self):
         self.__recbuff = self.read_type
@@ -139,3 +190,28 @@ class Tcp:
         if codings == None: return transparent_coder()
         if isinstance(codings, str): return getter(codings)()
         return codings
+
+
+class Server:
+    def __init__(self, addr = '', port = 1234, timeout = None, family = socket.AF_INET, type = socket.SOCK_STREAM, proto = 0, max_con = 1, client_timeout = None, encoding = 'utf8', decoding = None):
+        self.__port = Client.check_port(port)
+        self.__client_timeout = client_timeout
+        self.__encoding = encoding
+        self.__decoding = decoding
+        self.__socket = socket.socket(family, type, proto)
+        self.__socket.bind((addr, self.__port))
+        self.__socket.listen(max_con)
+        self.__socket.settimeout(timeout)
+
+    def accept(self):
+        try:
+            sock, addr = self.__socket.accept()
+        except (socket.timeout, BlockingIOError):
+            return None
+        except:
+            raise
+        else:
+            return Client(port = self.__port, encoding = self.__encoding, decoding = self.__decoding)._from_server(sock, addr, self.__client_timeout)
+
+    def close(self):
+        self.__socket.close()
