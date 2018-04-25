@@ -1,6 +1,8 @@
 import socket
 from Communication.exceptions import *
 from codecs import getincrementalencoder, getincrementaldecoder, IncrementalEncoder, IncrementalDecoder
+from queue import Queue
+from sys import exc_info
 
 class transparent_coder(IncrementalEncoder, IncrementalDecoder):
     def encode(self, object, final = False):
@@ -10,6 +12,7 @@ class transparent_coder(IncrementalEncoder, IncrementalDecoder):
 
 class Client:
     def __init__(self, addr = None, port = 1234, timeout = None, encoding = 'utf8', decoding = None, noexcept = True, read_error_retval = None):
+        self.__error_queue = Queue()
         self.__socket = None
         self.__addr = addr
         self.__port = Client.check_port(port)
@@ -31,15 +34,13 @@ class Client:
         if addr != None:
             self.__addr = addr
         elif self.__addr == None:
-            raise ValueError('Address not specified.')
+            return self.__error(ValueError('Address not specified.'), False)
         if port != None:
             self.__port = Client.check_port(port)
         try:
             self.__socket = socket.create_connection((self.__addr, self.__port), self.__timeout)
         except:
-            if self.__noexcept:
-                return False
-            raise
+            return self.__error(None, False)
         self.__readable = True
         self.__writable = True
         return True
@@ -52,27 +53,25 @@ class Client:
             self.__init_recbuff()
 
     def shutdown(self, write = True, read = False):
-        if self.__socket == None: raise PortClosedError('Operation on closed port (shutdown).')
+        if self.__socket == None:
+            return self.__error(PortClosedError('Operation on closed port (shutdown).'), False)
         if write:
             how = socket.SHUT_RDWR if read else socket.SHUT_WR
         elif read:
             how = socket.SHUT_RD
         else:
-            return
+            return True
         self.__readable &= ~read
         self.__writable &= ~write
         self.__socket.shutdown(how)
+        return True
             
 
     def read(self, size = 1):
         if self.__socket == None:
-            if self.__noexcept:
-                return self.__read_error_retval
-            raise PortClosedError('Operation on closed port (read).')
+            return self.__error(PortClosedError('Operation on closed port (read).'), self.__read_error_retval)
         if not self.__readable:
-            if self.__noexcept:
-                return self.__read_error_retval
-            raise ConnectionBrokenError()
+            return self.__error(ConnectionBrokenError(), self.__read_error_retval)
         while len(self.__recbuff) < size:
             try:
                 v = self.__socket.recv(self.__bufsize)
@@ -80,14 +79,10 @@ class Client:
                 break
             except ConnectionResetError:
                 self.__readable = False
-                if self.__noexcept:
-                    return self.__read_error_retval
-                raise
+                return self.__error(None, self.__read_error_retval)
             if not v:
                 self.__readable = False
-                if self.__noexcept:
-                    return self.__read_error_retval
-                raise ConnectionBrokenError()
+                return self.__error(ConnectionBrokenError(), self.__read_error_retval)
             self.__recbuff += self.__decoder.decode(v)
         ret = self.__recbuff[0:size]
         if len(self.__recbuff) > size:
@@ -97,7 +92,8 @@ class Client:
         return ret
 
     def write(self, value):
-        if self.__socket == None: raise PortClosedError('Operation on closed port (write).')
+        if self.__socket == None:
+            return self.__error(PortClosedError('Operation on closed port (write).'), 0)
         if not self.__writable: raise ConnectionBrokenError()
         if self.__force_encode or isinstance(value, str):
             value = self.__encoder.encode(value)
@@ -109,14 +105,10 @@ class Client:
             try:
                 v = self.__socket.send(value[sent:])
             except:
-                if self.__noexcept:
-                    return sent
-                raise
+                return self.__error(None, sent)
             if v == 0:
                 self.__writable = False
-                if self.__noexcept:
-                    return sent
-                raise ConnectionBrokenError()
+                return self.__error(ConnectionBrokenError(), sent)
             sent += v
         return sent
 
@@ -139,10 +131,6 @@ class Client:
     @property
     def port(self):
         return self.__port
-
-    @property
-    def connected(self):
-        return self.__socket != None
 
     @property
     def timeout(self):
@@ -179,6 +167,18 @@ class Client:
     def noexcept(self, value):
         self.__noexcept = bool(value)
 
+    @property
+    def was_error(self):
+        return not self.__error_queue.empty()
+
+    @property
+    def error(self):
+        if self.__error_queue.empty():
+            return None
+        err = self.__error_queue.get()
+        self.__error_queue.task_done()
+        return err
+
     def __enter__(self):
         return self
 
@@ -205,6 +205,17 @@ class Client:
         self.__writable = True
         self.timeout = timeout
         return self
+
+    def __error(self, exception = None, retval = False):
+        if self.__noexcept:
+            if exception == None:
+                exc_type, exc_value, exc_traceback = exc_info()
+                exception = exc_value
+            self.__error_queue.put(exception)
+            return retval
+        if exception == None:
+            raise
+        raise exception
 
     def __init_recbuff(self):
         self.__recbuff = self.read_type
